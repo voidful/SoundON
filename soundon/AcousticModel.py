@@ -3,56 +3,66 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import lightning as L
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+from torch.nn.utils.rnn import pad_sequence
 
 
 class AcousticModel(L.LightningModule):
-    def __init__(self, codebook_size: int = 100, train_dataset=None, validation_dataset=None, batch_size: int = 32):
+    def __init__(self, codebook_size: int = 100, train_dataset=None, batch_size: int = 32):
         super().__init__()
         self.encoder = Encoder(codebook_size)
         self.decoder = Decoder()
         self.train_dataset = train_dataset
-        self.validation_dataset = validation_dataset
         self.batch_size = batch_size
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.encoder(x)
         return self.decoder(x)
 
-    def compute_loss(self, mels_: torch.Tensor, mels: torch.Tensor, mels_lengths: torch.Tensor) -> torch.Tensor:
+    def compute_loss(self, mels_: torch.Tensor, mels: torch.Tensor) -> torch.Tensor:
         mels_ = mels_.transpose(1, 2)
         padded_mels = torch.full_like(mels_, -100.0)
         padded_mels[:, :, :mels.size(-1)] = mels
         loss_fn = FocalL1Loss()
         loss = loss_fn(mels_, padded_mels)
-        print(loss)
+        self.log('loss', loss, prog_bar=True)
         return loss
 
     def training_step(self, batch, batch_idx):
         x, mels, mels_lengths = batch
         mels_ = self.forward(x)
-        return self.compute_loss(mels_, mels, mels_lengths)
-
-    def validation_step(self, batch, batch_idx):
-        x, mels, mels_lengths = batch
-        mels_ = self.forward(x)
-        return self.compute_loss(mels_, mels, mels_lengths)
+        return self.compute_loss(mels_, mels)
 
     def configure_optimizers(self):
-        return torch.optim.AdamW(self.parameters(), lr=3e-3)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=5e-5)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            optimizer,
+            lr_lambda=lambda epoch: 1 - (epoch / 100)  # Linear decay
+        )
+        return [optimizer], [scheduler]
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True, num_workers=0)
-
-    def val_dataloader(self):
-        return DataLoader(self.validation_dataset, batch_size=1, shuffle=False, num_workers=0)
+        return DataLoader(self.train_dataset,
+                          batch_size=self.batch_size,
+                          shuffle=True,
+                          num_workers=0,
+                          collate_fn=self.collate_fn)
 
     @torch.inference_mode()
     def generate(self, x: torch.Tensor) -> torch.Tensor:
         x = self.encoder(x)
         return self.decoder.generate(x)
+
+    @staticmethod
+    def collate_fn(batch):
+        xs, mels, mels_lengths = zip(*batch)
+        xs = pad_sequence(xs, batch_first=True, padding_value=0)
+        mels_lengths = torch.tensor([mel.size(2) for mel in mels], dtype=torch.long)
+        max_len = max(mels_lengths).item()
+        max_mel_size = max([mel.size(1) for mel in mels])
+        padded_mels = torch.full((len(mels), max_mel_size, max_len), -100.0).to(mels[0].device)
+        for i, mel in enumerate(mels):
+            padded_mels[i, :, :mel.size(2)] = mel
+        return xs, padded_mels, mels_lengths
 
 
 class Encoder(nn.Module):
@@ -64,7 +74,7 @@ class Encoder(nn.Module):
             nn.Conv1d(256, 512, 5, 1, 2),
             nn.ReLU(),
             nn.InstanceNorm1d(512),
-            nn.ConvTranspose1d(512, 512, 5, 5, 1),
+            nn.ConvTranspose1d(512, 512, 4, 3, 1),
             nn.Conv1d(512, 512, 5, 1, 2),
             nn.ReLU(),
             nn.InstanceNorm1d(512),
@@ -144,34 +154,6 @@ class Decoder(nn.Module):
             m = self.proj(x).squeeze(1)
             mel.append(m)
         return torch.stack(mel, dim=1).transpose(1, 2)
-
-
-class FocalF1Loss(nn.Module):
-    def __init__(self, gamma=2, alpha=0.25):
-        super(FocalF1Loss, self).__init__()
-        self.gamma = gamma
-        self.alpha = alpha
-
-    def forward(self, inputs, targets):
-        # Calculate F1 score components
-        epsilon = 1e-7
-        inputs = torch.sigmoid(inputs)
-        inputs = inputs.view(-1)
-        targets = targets.view(-1)
-
-        true_positive = (inputs * targets).sum()
-        precision = true_positive / (inputs.sum() + epsilon)
-        recall = true_positive / (targets.sum() + epsilon)
-        f1_score = 2 * precision * recall / (precision + recall + epsilon)
-
-        # Calculate Focal Loss components
-        BCE_loss = F.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-BCE_loss)  # Prevent nan when probability is 0
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * BCE_loss
-
-        # Combine F1 score and Focal Loss
-        focal_f1_loss = (1 - f1_score) * focal_loss.mean()
-        return focal_f1_loss
 
 
 class FocalL1Loss(nn.Module):
