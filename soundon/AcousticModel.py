@@ -7,12 +7,13 @@ from torch.nn.utils.rnn import pad_sequence
 
 
 class AcousticModel(L.LightningModule):
-    def __init__(self, codebook_size: int = 100, train_dataset=None, batch_size: int = 32):
+    def __init__(self, codebook_size: int = 100, train_dataset=None, batch_size: int = 32, lr=3e-3):
         super().__init__()
         self.encoder = Encoder(codebook_size)
         self.decoder = Decoder()
         self.train_dataset = train_dataset
         self.batch_size = batch_size
+        self.lr = lr
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.encoder(x)
@@ -33,10 +34,10 @@ class AcousticModel(L.LightningModule):
         return self.compute_loss(mels_, mels)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=5e-5)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
         scheduler = torch.optim.lr_scheduler.LambdaLR(
             optimizer,
-            lr_lambda=lambda epoch: 1 - (epoch / 100)  # Linear decay
+            lr_lambda=lambda epoch: 1  - (epoch / 100)  # Linear decay
         )
         return [optimizer], [scheduler]
 
