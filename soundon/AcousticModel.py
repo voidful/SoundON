@@ -4,11 +4,13 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 import lightning as L
 from torch.nn.utils.rnn import pad_sequence
+from functools import partial
 
 
 class AcousticModel(L.LightningModule):
-    def __init__(self, codebook_size: int = 100, train_dataset=None, batch_size: int = 32, lr=3e-3):
+    def __init__(self, codebook_size: int = 2000, train_dataset=None, batch_size: int = 64, lr=1e-4):
         super().__init__()
+        self.codebook_size = codebook_size
         self.encoder = Encoder(codebook_size)
         self.decoder = Decoder()
         self.train_dataset = train_dataset
@@ -21,9 +23,10 @@ class AcousticModel(L.LightningModule):
 
     def compute_loss(self, mels_: torch.Tensor, mels: torch.Tensor) -> torch.Tensor:
         mels_ = mels_.transpose(1, 2)
-        padded_mels = torch.full_like(mels_, -100.0)
+        padded_mels = torch.full_like(mels_, 0.0)
         padded_mels[:, :, :mels.size(-1)] = mels
-        loss_fn = FocalL1Loss()
+        # loss_fn = FocalL1Loss()
+        loss_fn = nn.L1Loss()
         loss = loss_fn(mels_, padded_mels)
         self.log('loss', loss, prog_bar=True)
         return loss
@@ -34,19 +37,17 @@ class AcousticModel(L.LightningModule):
         return self.compute_loss(mels_, mels)
 
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lr_lambda=lambda epoch: 1  - (epoch / 100)  # Linear decay
-        )
-        return [optimizer], [scheduler]
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr,
+                                      betas=(0.8, 0.99),
+                                      weight_decay=1e-5)
+        return optimizer
 
     def train_dataloader(self):
         return DataLoader(self.train_dataset,
                           batch_size=self.batch_size,
                           shuffle=True,
                           num_workers=0,
-                          collate_fn=self.collate_fn)
+                          collate_fn=partial(self.collate_fn, codebook_size=self.codebook_size))
 
     @torch.inference_mode()
     def generate(self, x: torch.Tensor) -> torch.Tensor:
@@ -54,13 +55,13 @@ class AcousticModel(L.LightningModule):
         return self.decoder.generate(x)
 
     @staticmethod
-    def collate_fn(batch):
-        xs, mels, mels_lengths = zip(*batch)
-        xs = pad_sequence(xs, batch_first=True, padding_value=0)
+    def collate_fn(batch, codebook_size: int):
+        xs, mels = zip(*batch)
+        xs = pad_sequence(xs, batch_first=True, padding_value=codebook_size)
         mels_lengths = torch.tensor([mel.size(2) for mel in mels], dtype=torch.long)
         max_len = max(mels_lengths).item()
         max_mel_size = max([mel.size(1) for mel in mels])
-        padded_mels = torch.full((len(mels), max_mel_size, max_len), -100.0).to(mels[0].device)
+        padded_mels = torch.full((len(mels), max_mel_size, max_len), 0.0).to(mels[0].device)
         for i, mel in enumerate(mels):
             padded_mels[i, :, :mel.size(2)] = mel
         return xs, padded_mels, mels_lengths
@@ -75,7 +76,7 @@ class Encoder(nn.Module):
             nn.Conv1d(256, 512, 5, 1, 2),
             nn.ReLU(),
             nn.InstanceNorm1d(512),
-            nn.ConvTranspose1d(512, 512, 4, 3, 1),
+            nn.ConvTranspose1d(512, 512, 4, 2, 1),
             nn.Conv1d(512, 512, 5, 1, 2),
             nn.ReLU(),
             nn.InstanceNorm1d(512),
@@ -164,13 +165,14 @@ class FocalL1Loss(nn.Module):
         self.reduction = reduction
 
     def forward(self, input, target):
-        l1_loss = F.l1_loss(input, target, reduction='none')
+        mask = (target != 0.0).float()
+        l1_loss = F.l1_loss(input * mask, target * mask, reduction='none')
         focal_weight = torch.pow(1 - torch.exp(-l1_loss), self.gamma)
         focal_l1_loss = focal_weight * l1_loss
 
         if self.reduction == 'mean':
-            return focal_l1_loss.mean()
+            return (focal_l1_loss * mask).sum() / mask.sum()
         elif self.reduction == 'sum':
-            return focal_l1_loss.sum()
+            return (focal_l1_loss * mask).sum()
         else:
-            return focal_l1_loss
+            return focal_l1_loss * mask

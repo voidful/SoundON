@@ -17,9 +17,10 @@ class BigVGanVocoder:
     }
 
     def __init__(self):
+        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         gan_model = BigVGAN.from_pretrained('nvidia/bigvgan_v2_24khz_100band_256x', use_cuda_kernel=False)
         gan_model.remove_weight_norm()
-        self.gan_model = gan_model.eval().to('cuda')
+        self.gan_model = gan_model.eval().to(self.device)
 
     def get_mel_spectrogram(self, wav, sr=None):
         if isinstance(wav, str):
@@ -31,7 +32,7 @@ class BigVGanVocoder:
             # convert sr
             wav = librosa.resample(wav, orig_sr=sr, target_sr=self.gan_model.h.sampling_rate)
         wav = torch.FloatTensor(wav).unsqueeze(0)
-        return get_mel_spectrogram(wav, self.gan_model.h).to('cuda')
+        return get_mel_spectrogram(wav, self.gan_model.h).to(self.device)
 
     def generate(self, mel):
         with torch.inference_mode():
