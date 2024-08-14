@@ -25,8 +25,7 @@ class AcousticModel(L.LightningModule):
         mels_ = mels_.transpose(1, 2)
         padded_mels = torch.full_like(mels_, 0.0)
         padded_mels[:, :, :mels.size(-1)] = mels
-        # loss_fn = FocalL1Loss()
-        loss_fn = nn.L1Loss()
+        loss_fn = MaskL1Loss()
         loss = loss_fn(mels_, padded_mels)
         self.log('loss', loss, prog_bar=True)
         return loss
@@ -158,21 +157,19 @@ class Decoder(nn.Module):
         return torch.stack(mel, dim=1).transpose(1, 2)
 
 
-class FocalL1Loss(nn.Module):
+class MaskL1Loss(nn.Module):
     def __init__(self, gamma=2.0, reduction='mean'):
-        super(FocalL1Loss, self).__init__()
+        super(MaskL1Loss, self).__init__()
         self.gamma = gamma
         self.reduction = reduction
 
     def forward(self, input, target):
-        mask = (target != 0.0).float()
+        mask = (target != -100.0).float()
         l1_loss = F.l1_loss(input * mask, target * mask, reduction='none')
-        focal_weight = torch.pow(1 - torch.exp(-l1_loss), self.gamma)
-        focal_l1_loss = focal_weight * l1_loss
-
         if self.reduction == 'mean':
-            return (focal_l1_loss * mask).sum() / mask.sum()
+            return (l1_loss * mask).sum() / mask.sum()
         elif self.reduction == 'sum':
-            return (focal_l1_loss * mask).sum()
+            return (l1_loss * mask).sum()
         else:
-            return focal_l1_loss * mask
+            return l1_loss * mask
+

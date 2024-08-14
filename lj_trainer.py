@@ -6,7 +6,7 @@ import torch
 import lightning as L
 
 # Initialize the tokenizer and vocoder
-ht = HubertTokenizer('zh_hubert_layer20_code2000')  # zh_hubert_layer20_code2000 hubert_layer6_code100
+ht = HubertTokenizer('hubert_layer6_code100')
 vc = BigVGanVocoder()
 
 
@@ -30,7 +30,7 @@ class HYLeeDataset():
 train_dataset = HYLeeDataset()
 
 # Initialize the model
-model = AcousticModel(2000, train_dataset=train_dataset, batch_size=64, lr=4e-4)
+model = AcousticModel(100, train_dataset=train_dataset, batch_size=64, lr=4e-4)
 
 # Initialize the trainer with the custom LearningRateFinder and LearningRateMonitor callbacks
 trainer = L.Trainer(
