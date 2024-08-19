@@ -1,0 +1,8 @@
+datasets
+SoundCodec
+transformers
+dtokenizer
+lightning
+huggingface_hub
+matplotlib
+librosa

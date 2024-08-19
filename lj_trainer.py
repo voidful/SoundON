@@ -34,7 +34,7 @@ model = AcousticModel(100, train_dataset=train_dataset, batch_size=64, lr=4e-4)
 
 # Initialize the trainer with the custom LearningRateFinder and LearningRateMonitor callbacks
 trainer = L.Trainer(
-    max_epochs=30,
+    max_epochs=500,
     accumulate_grad_batches=4,
     enable_progress_bar=True,
     enable_checkpointing=True,
